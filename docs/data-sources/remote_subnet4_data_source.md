@@ -34,6 +34,13 @@ data "kea_remote_subnet4_data_source" "example" {
 
 ### Read-Only
 
+- `ddns_generated_prefix` (String) Prefix used when Kea generates forward DDNS names.
+- `ddns_override_client_update` (Boolean) When true, Kea sends DDNS updates even if the client requests to do it itself.
+- `ddns_override_no_update` (Boolean) When true, Kea sends DDNS updates even if the client sets the N flag.
+- `ddns_qualifying_suffix` (String) Suffix appended to generated forward DDNS names.
+- `ddns_rev_dns_name` (String) Reverse DNS zone for PTR records.
+- `ddns_send_updates` (Boolean) When true, Kea sends DDNS updates for leases in this subnet.
+- `ddns_use_conflict_resolution` (Boolean) When true, Kea uses DDNS conflict-resolution behavior for this subnet.
 - `id` (Number) The ID of this resource.
 - `option_data` (Attributes List) (see [below for nested schema](#nestedatt--option_data))
 - `pools` (List of String)

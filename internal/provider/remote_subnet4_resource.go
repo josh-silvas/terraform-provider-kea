@@ -35,16 +35,23 @@ type (
 
 	// remoteSubnet4ResourceSchema describes the resource data model.
 	remoteSubnet4ResourceSchema struct {
-		Hostname       types.String                       `tfsdk:"hostname"`
-		ID             types.Int64                        `tfsdk:"id"`
-		OptionData     []remoteSubnet4OptionResourceModel `tfsdk:"option_data"`
-		Pools          []remoteSubnet4PoolResourceModel   `tfsdk:"pools"`
-		Relay          []remoteSubnet4RelayResourceModel  `tfsdk:"relay"`
-		Subnet         types.String                       `tfsdk:"subnet"`
-		NextServer     types.String                       `tfsdk:"next_server"`
-		ServerHostname types.String                       `tfsdk:"server_hostname"`
-		BootFileName   types.String                       `tfsdk:"boot_file_name"`
-		UserContext    types.Map                          `tfsdk:"user_context"`
+		Hostname                  types.String                       `tfsdk:"hostname"`
+		ID                        types.Int64                        `tfsdk:"id"`
+		OptionData                []remoteSubnet4OptionResourceModel `tfsdk:"option_data"`
+		Pools                     []remoteSubnet4PoolResourceModel   `tfsdk:"pools"`
+		Relay                     []remoteSubnet4RelayResourceModel  `tfsdk:"relay"`
+		Subnet                    types.String                       `tfsdk:"subnet"`
+		NextServer                types.String                       `tfsdk:"next_server"`
+		ServerHostname            types.String                       `tfsdk:"server_hostname"`
+		BootFileName              types.String                       `tfsdk:"boot_file_name"`
+		UserContext               types.Map                          `tfsdk:"user_context"`
+		DdnsSendUpdates           types.Bool                         `tfsdk:"ddns_send_updates"`
+		DdnsOverrideNoUpdate      types.Bool                         `tfsdk:"ddns_override_no_update"`
+		DdnsOverrideClientUpdate  types.Bool                         `tfsdk:"ddns_override_client_update"`
+		DdnsGeneratedPrefix       types.String                       `tfsdk:"ddns_generated_prefix"`
+		DdnsQualifyingSuffix      types.String                       `tfsdk:"ddns_qualifying_suffix"`
+		DdnsRevDNSName            types.String                       `tfsdk:"ddns_rev_dns_name"`
+		DdnsUseConflictResolution types.Bool                         `tfsdk:"ddns_use_conflict_resolution"`
 	}
 
 	// remoteSubnet4OptionResourceModel : Represents a single option-data entry in Kea.
@@ -132,6 +139,34 @@ func (r *remoteSubnet4Resource) Schema(_ context.Context, _ resource.SchemaReque
 			},
 			"boot_file_name": schema.StringAttribute{
 				MarkdownDescription: "Optional conveys the boot configuration file, can be up to 128 bytes long, and is sent using the `file` field.",
+				Optional:            true,
+			},
+			"ddns_send_updates": schema.BoolAttribute{
+				MarkdownDescription: "When true, Kea sends DDNS updates for leases in this subnet.",
+				Optional:            true,
+			},
+			"ddns_override_no_update": schema.BoolAttribute{
+				MarkdownDescription: "When true, Kea sends DDNS updates even if the client sets the N flag.",
+				Optional:            true,
+			},
+			"ddns_override_client_update": schema.BoolAttribute{
+				MarkdownDescription: "When true, Kea sends DDNS updates even if the client requests to do it itself.",
+				Optional:            true,
+			},
+			"ddns_generated_prefix": schema.StringAttribute{
+				MarkdownDescription: "Prefix used when Kea generates forward DDNS names. e.g. `host`",
+				Optional:            true,
+			},
+			"ddns_qualifying_suffix": schema.StringAttribute{
+				MarkdownDescription: "Suffix appended to generated forward DDNS names. e.g. `example.com.`",
+				Optional:            true,
+			},
+			"ddns_rev_dns_name": schema.StringAttribute{
+				MarkdownDescription: "Reverse DNS zone for PTR records. e.g. `225.168.192.in-addr.arpa.`",
+				Optional:            true,
+			},
+			"ddns_use_conflict_resolution": schema.BoolAttribute{
+				MarkdownDescription: "When true, Kea uses DDNS conflict-resolution behavior for this subnet.",
 				Optional:            true,
 			},
 		},
@@ -241,6 +276,7 @@ func (r *remoteSubnet4Resource) Create(ctx context.Context, req resource.CreateR
 	if !config.BootFileName.IsNull() && !config.BootFileName.IsUnknown() && config.BootFileName.ValueString() != "" {
 		newSubnet.BootFileName = config.BootFileName.ValueString()
 	}
+	applyDdnsConfig(config, &newSubnet)
 
 	// nolint: contextcheck
 	respData, err := r.client.RemoteSubnet4Set(config.Hostname.ValueString(), []kea.NewRemoteSubnet4{newSubnet})
@@ -357,6 +393,7 @@ func (r *remoteSubnet4Resource) Read(ctx context.Context, req resource.ReadReque
 			return mv
 		}()
 	}
+	setDdnsStateFromKea(respData, &config)
 
 	// If there are any diagnostics errors, stop here.
 	if resp.Diagnostics.HasError() {
@@ -448,6 +485,7 @@ func (r *remoteSubnet4Resource) Update(ctx context.Context, req resource.UpdateR
 	if !config.BootFileName.IsNull() && !config.BootFileName.IsUnknown() && config.BootFileName.ValueString() != "" {
 		update.BootFileName = config.BootFileName.ValueString()
 	}
+	applyDdnsConfig(config, &update)
 
 	// nolint: contextcheck
 	respData, err := r.client.RemoteSubnet4Set(config.Hostname.ValueString(), []kea.NewRemoteSubnet4{update})
@@ -511,4 +549,56 @@ func (r *remoteSubnet4Resource) Delete(ctx context.Context, req resource.DeleteR
 // ImportState : Imports an existing resource by a unique identifier.
 func (r *remoteSubnet4Resource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("subnet"), req, resp)
+}
+
+func applyDdnsConfig(config remoteSubnet4ResourceSchema, subnet *kea.NewRemoteSubnet4) {
+	if !config.DdnsSendUpdates.IsNull() && !config.DdnsSendUpdates.IsUnknown() {
+		v := config.DdnsSendUpdates.ValueBool()
+		subnet.DdnsSendUpdates = &v
+	}
+	if !config.DdnsOverrideNoUpdate.IsNull() && !config.DdnsOverrideNoUpdate.IsUnknown() {
+		v := config.DdnsOverrideNoUpdate.ValueBool()
+		subnet.DdnsOverrideNoUpdate = &v
+	}
+	if !config.DdnsOverrideClientUpdate.IsNull() && !config.DdnsOverrideClientUpdate.IsUnknown() {
+		v := config.DdnsOverrideClientUpdate.ValueBool()
+		subnet.DdnsOverrideClientUpdate = &v
+	}
+	if !config.DdnsGeneratedPrefix.IsNull() && !config.DdnsGeneratedPrefix.IsUnknown() && config.DdnsGeneratedPrefix.ValueString() != "" {
+		subnet.DdnsGeneratedPrefix = config.DdnsGeneratedPrefix.ValueString()
+	}
+	if !config.DdnsQualifyingSuffix.IsNull() && !config.DdnsQualifyingSuffix.IsUnknown() && config.DdnsQualifyingSuffix.ValueString() != "" {
+		subnet.DdnsQualifyingSuffix = config.DdnsQualifyingSuffix.ValueString()
+	}
+	if !config.DdnsRevDNSName.IsNull() && !config.DdnsRevDNSName.IsUnknown() && config.DdnsRevDNSName.ValueString() != "" {
+		subnet.DdnsRevDNSName = config.DdnsRevDNSName.ValueString()
+	}
+	if !config.DdnsUseConflictResolution.IsNull() && !config.DdnsUseConflictResolution.IsUnknown() {
+		v := config.DdnsUseConflictResolution.ValueBool()
+		subnet.DdnsUseConflictResolution = &v
+	}
+}
+
+func setDdnsStateFromKea(respData kea.RemoteSubnet4, config *remoteSubnet4ResourceSchema) {
+	if respData.DdnsSendUpdates != nil {
+		config.DdnsSendUpdates = types.BoolValue(*respData.DdnsSendUpdates)
+	}
+	if respData.DdnsOverrideNoUpdate != nil {
+		config.DdnsOverrideNoUpdate = types.BoolValue(*respData.DdnsOverrideNoUpdate)
+	}
+	if respData.DdnsOverrideClientUpdate != nil {
+		config.DdnsOverrideClientUpdate = types.BoolValue(*respData.DdnsOverrideClientUpdate)
+	}
+	if respData.DdnsGeneratedPrefix != "" {
+		config.DdnsGeneratedPrefix = types.StringValue(respData.DdnsGeneratedPrefix)
+	}
+	if respData.DdnsQualifyingSuffix != "" {
+		config.DdnsQualifyingSuffix = types.StringValue(respData.DdnsQualifyingSuffix)
+	}
+	if respData.DdnsRevDNSName != "" {
+		config.DdnsRevDNSName = types.StringValue(respData.DdnsRevDNSName)
+	}
+	if respData.DdnsUseConflictResolution != nil {
+		config.DdnsUseConflictResolution = types.BoolValue(*respData.DdnsUseConflictResolution)
+	}
 }

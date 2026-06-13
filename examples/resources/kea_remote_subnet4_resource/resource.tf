@@ -15,4 +15,11 @@ resource "kea_remote_subnet4_resource" "example" {
   user_context = {
     "foo" = "bar"
   }
+  ddns_send_updates            = true
+  ddns_override_no_update      = true
+  ddns_override_client_update  = true
+  ddns_generated_prefix        = "host"
+  ddns_qualifying_suffix       = "example.com."
+  ddns_rev_dns_name            = "225.168.192.in-addr.arpa."
+  ddns_use_conflict_resolution = true
 }
