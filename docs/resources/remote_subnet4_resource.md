@@ -30,6 +30,13 @@ resource "kea_remote_subnet4_resource" "example" {
   user_context = {
     "foo" = "bar"
   }
+  ddns_send_updates            = true
+  ddns_override_no_update      = true
+  ddns_override_client_update  = true
+  ddns_generated_prefix        = "host"
+  ddns_qualifying_suffix       = "example.com."
+  ddns_rev_dns_name            = "225.168.192.in-addr.arpa."
+  ddns_use_conflict_resolution = true
 }
 ```
 
@@ -45,6 +52,13 @@ resource "kea_remote_subnet4_resource" "example" {
 ### Optional
 
 - `boot_file_name` (String) Optional conveys the boot configuration file, can be up to 128 bytes long, and is sent using the `file` field.
+- `ddns_generated_prefix` (String) Prefix used when Kea generates forward DDNS names. e.g. `host`
+- `ddns_override_client_update` (Boolean) When true, Kea sends DDNS updates even if the client requests to do it itself.
+- `ddns_override_no_update` (Boolean) When true, Kea sends DDNS updates even if the client sets the N flag.
+- `ddns_qualifying_suffix` (String) Suffix appended to generated forward DDNS names. e.g. `example.com.`
+- `ddns_rev_dns_name` (String) Reverse DNS zone for PTR records. e.g. `225.168.192.in-addr.arpa.`
+- `ddns_send_updates` (Boolean) When true, Kea sends DDNS updates for leases in this subnet.
+- `ddns_use_conflict_resolution` (Boolean) When true, Kea uses DDNS conflict-resolution behavior for this subnet.
 - `next_server` (String) Optional TFTP boot server IP address, packets sent in the `siaddr` field.
 - `option_data` (Attributes List) List of option-data to configure on the pool. e.g. `[{code = 6, name = "domain-name-servers", data = "8.8.8.8, 4.2.2.2"}]` (see [below for nested schema](#nestedatt--option_data))
 - `relay` (Attributes List) List of relay IPs to configure in Kea. e.g. `['192.168.230.1']` (see [below for nested schema](#nestedatt--relay))

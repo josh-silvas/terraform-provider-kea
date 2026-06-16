@@ -7,17 +7,24 @@ import (
 type (
 	// RemoteSubnet4 : Represents a single subnet4 entry in Kea.
 	RemoteSubnet4 struct {
-		FourO6Interface   string                 `json:"4o6-interface"`
-		FourO6InterfaceID string                 `json:"4o6-interface-id"`
-		FourO6Subnet      string                 `json:"4o6-subnet"`
-		ID                int                    `json:"id"`
-		Metadata          Metadata               `json:"metadata"`
-		OptionData        []OptionData           `json:"option-data"`
-		Pools             []Pool                 `json:"pools"`
-		Relay             Relay                  `json:"relay"`
-		SharedNetworkName interface{}            `json:"shared-network-name"`
-		Subnet            string                 `json:"subnet"`
-		UserContext       map[string]interface{} `json:"user-context"`
+		FourO6Interface           string                 `json:"4o6-interface"`
+		FourO6InterfaceID         string                 `json:"4o6-interface-id"`
+		FourO6Subnet              string                 `json:"4o6-subnet"`
+		DdnsSendUpdates           *bool                  `json:"ddns-send-updates,omitempty"`
+		DdnsOverrideNoUpdate      *bool                  `json:"ddns-override-no-update,omitempty"`
+		DdnsOverrideClientUpdate  *bool                  `json:"ddns-override-client-update,omitempty"`
+		DdnsGeneratedPrefix       string                 `json:"ddns-generated-prefix,omitempty"`
+		DdnsQualifyingSuffix      string                 `json:"ddns-qualifying-suffix,omitempty"`
+		DdnsRevDNSName            string                 `json:"ddns-rev-dns-name,omitempty"`
+		DdnsUseConflictResolution *bool                  `json:"ddns-use-conflict-resolution,omitempty"`
+		ID                        int                    `json:"id"`
+		Metadata                  Metadata               `json:"metadata"`
+		OptionData                []OptionData           `json:"option-data"`
+		Pools                     []Pool                 `json:"pools"`
+		Relay                     Relay                  `json:"relay"`
+		SharedNetworkName         interface{}            `json:"shared-network-name"`
+		Subnet                    string                 `json:"subnet"`
+		UserContext               map[string]interface{} `json:"user-context"`
 	}
 
 	// RemoteSubnet4List : Represents a single subnet4 entry in Kea.
@@ -30,16 +37,23 @@ type (
 
 	// NewRemoteSubnet4 : Represents a single subnet4 entry in Kea.
 	NewRemoteSubnet4 struct {
-		ID                int               `json:"id"`
-		Subnet            string            `json:"subnet"`
-		SharedNetworkName *string           `json:"shared-network-name"`
-		Pools             []Pool            `json:"pools"`
-		OptionData        []OptionData      `json:"option-data"`
-		Relay             Relay             `json:"relay,omitempty"`
-		UserContext       map[string]string `json:"user-context,omitempty"`
-		NextServer        string            `json:"next-server,omitempty"`
-		ServerHostname    string            `json:"server-hostname,omitempty"`
-		BootFileName      string            `json:"boot-file-name,omitempty"`
+		ID                        int               `json:"id"`
+		Subnet                    string            `json:"subnet"`
+		SharedNetworkName         *string           `json:"shared-network-name"`
+		Pools                     []Pool            `json:"pools"`
+		OptionData                []OptionData      `json:"option-data"`
+		Relay                     Relay             `json:"relay,omitempty"`
+		UserContext               map[string]string `json:"user-context,omitempty"`
+		NextServer                string            `json:"next-server,omitempty"`
+		ServerHostname            string            `json:"server-hostname,omitempty"`
+		BootFileName              string            `json:"boot-file-name,omitempty"`
+		DdnsSendUpdates           *bool             `json:"ddns-send-updates,omitempty"`
+		DdnsOverrideNoUpdate      *bool             `json:"ddns-override-no-update,omitempty"`
+		DdnsOverrideClientUpdate  *bool             `json:"ddns-override-client-update,omitempty"`
+		DdnsGeneratedPrefix       string            `json:"ddns-generated-prefix,omitempty"`
+		DdnsQualifyingSuffix      string            `json:"ddns-qualifying-suffix,omitempty"`
+		DdnsRevDNSName            string            `json:"ddns-rev-dns-name,omitempty"`
+		DdnsUseConflictResolution *bool             `json:"ddns-use-conflict-resolution,omitempty"`
 	}
 
 	// Relay : Represents a single relay entry in Kea.
