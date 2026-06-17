@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2020, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package toproto
@@ -40,6 +40,7 @@ func ReadDataSource_Response(in *tfprotov5.ReadDataSourceResponse) *tfplugin5.Re
 	resp := &tfplugin5.ReadDataSource_Response{
 		Diagnostics: Diagnostics(in.Diagnostics),
 		State:       DynamicValue(in.State),
+		Deferred:    Deferred(in.Deferred),
 	}
 
 	return resp
