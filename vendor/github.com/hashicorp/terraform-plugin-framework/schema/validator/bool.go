@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package validator
@@ -35,12 +35,17 @@ type BoolRequest struct {
 
 	// ConfigValue contains the value of the attribute for validation from the configuration.
 	ConfigValue types.Bool
+
+	// ClientCapabilities defines optionally supported protocol features for
+	// schema validation RPCs, such as forward-compatible Terraform
+	// behavior changes.
+	ClientCapabilities ValidateSchemaClientCapabilities
 }
 
 // BoolResponse is a response to a BoolRequest.
 type BoolResponse struct {
-	// Diagnostics report errors or warnings related to validating the data
-	// source configuration. An empty slice indicates success, with no warnings
+	// Diagnostics report errors or warnings related to validating the data source, provider, or resource
+	// configuration. An empty slice indicates success, with no warnings
 	// or errors generated.
 	Diagnostics diag.Diagnostics
 }

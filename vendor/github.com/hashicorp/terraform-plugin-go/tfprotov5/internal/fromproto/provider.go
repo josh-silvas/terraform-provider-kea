@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2020, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package fromproto
@@ -28,6 +28,16 @@ func GetProviderSchemaRequest(in *tfplugin5.GetProviderSchema_Request) *tfprotov
 	return resp
 }
 
+func GetResourceIdentitySchemasRequest(in *tfplugin5.GetResourceIdentitySchemas_Request) *tfprotov5.GetResourceIdentitySchemasRequest {
+	if in == nil {
+		return nil
+	}
+
+	resp := &tfprotov5.GetResourceIdentitySchemasRequest{}
+
+	return resp
+}
+
 func PrepareProviderConfigRequest(in *tfplugin5.PrepareProviderConfig_Request) *tfprotov5.PrepareProviderConfigRequest {
 	if in == nil {
 		return nil
@@ -46,8 +56,9 @@ func ConfigureProviderRequest(in *tfplugin5.Configure_Request) *tfprotov5.Config
 	}
 
 	resp := &tfprotov5.ConfigureProviderRequest{
-		Config:           DynamicValue(in.Config),
-		TerraformVersion: in.TerraformVersion,
+		Config:             DynamicValue(in.Config),
+		TerraformVersion:   in.TerraformVersion,
+		ClientCapabilities: ConfigureProviderClientCapabilities(in.ClientCapabilities),
 	}
 
 	return resp

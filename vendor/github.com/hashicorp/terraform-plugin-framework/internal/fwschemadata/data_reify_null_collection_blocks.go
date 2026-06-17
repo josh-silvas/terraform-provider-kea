@@ -1,10 +1,11 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package fwschemadata
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/internal/fromtftypes"
@@ -22,9 +23,23 @@ func (d *Data) ReifyNullCollectionBlocks(ctx context.Context) diag.Diagnostics {
 
 	// Errors are handled as richer diag.Diagnostics instead.
 	d.TerraformValue, _ = tftypes.Transform(d.TerraformValue, func(tfTypePath *tftypes.AttributePath, tfTypeValue tftypes.Value) (tftypes.Value, error) {
+		// Skip the root of the data
+		if len(tfTypePath.Steps()) < 1 {
+			return tfTypeValue, nil
+		}
+
 		// Only transform null values.
 		if !tfTypeValue.IsNull() {
 			return tfTypeValue, nil
+		}
+
+		_, err := d.Schema.AttributeAtTerraformPath(ctx, tfTypePath)
+		if err != nil {
+			if errors.Is(err, fwschema.ErrPathInsideDynamicAttribute) {
+				// ignore attributes/elements inside schema.DynamicAttribute
+				logging.FrameworkTrace(ctx, "attribute is inside of a dynamic attribute, skipping reify null collection blocks")
+				return tfTypeValue, nil
+			}
 		}
 
 		fwPath, fwPathDiags := fromtftypes.AttributePath(ctx, tfTypePath, d.Schema)

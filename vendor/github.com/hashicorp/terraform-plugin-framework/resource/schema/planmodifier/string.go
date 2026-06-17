@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package planmodifier
@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// String is a schema validator for types.String attributes.
+// String is a schema plan modifier for types.String attributes.
 type String interface {
 	Describer
 
@@ -81,8 +81,8 @@ type StringResponse struct {
 	// attributes.
 	Private *privatestate.ProviderData
 
-	// Diagnostics report errors or warnings related to validating the data
-	// source configuration. An empty slice indicates success, with no warnings
-	// or errors generated.
+	// Diagnostics report errors or warnings related to modifying the resource
+	// plan. An empty slice indicates success, with no warnings or
+	// errors generated.
 	Diagnostics diag.Diagnostics
 }
