@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package basetypes
@@ -8,16 +8,18 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
+
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/attr/xattr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
-	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 // Int64Typable extends attr.Type for int64 types.
 // Implement this interface to create a custom Int64Type type.
 type Int64Typable interface {
+	//nolint:staticcheck // xattr.TypeWithValidate is deprecated, but we still need to support it.
 	xattr.TypeWithValidate
 
 	// ValueFromInt64 should convert the Int64 to a Int64Valuable type.

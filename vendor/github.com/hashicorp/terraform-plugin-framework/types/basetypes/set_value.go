@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package basetypes
@@ -173,6 +173,23 @@ func (s SetValue) Elements() []attr.Value {
 	return result
 }
 
+// Length returns the number of elements in the Set.
+//
+// If the Set is null or unknown, the behavior depends on the options:
+//   - If UnhandledNullAsZero or UnhandledUnknownAsZero is true, zero is returned.
+//   - If false, a panic occurs.
+func (s SetValue) Length(opts CollectionLengthOptions) int {
+	if s.IsNull() && !opts.UnhandledNullAsZero {
+		panic("cannot call Length on a null Set")
+	}
+
+	if s.IsUnknown() && !opts.UnhandledUnknownAsZero {
+		panic("cannot call Length on an unknown Set")
+	}
+
+	return len(s.elements)
+}
+
 // ElementsAs populates `target` with the elements of the SetValue, throwing an
 // error if the elements cannot be stored in `target`.
 func (s SetValue) ElementsAs(ctx context.Context, target interface{}, allowUnhandled bool) diag.Diagnostics {
@@ -209,6 +226,19 @@ func (s SetValue) ToTerraformValue(ctx context.Context) (tftypes.Value, error) {
 
 	switch s.state {
 	case attr.ValueStateKnown:
+		// MAINTAINER NOTE:
+		// SetValue does not support DynamicType as an element type. It is not explicitly prevented from being created with the
+		// Framework type system, but the Framework-supported SetAttribute, SetNestedAttribute, and SetNestedBlock all prevent DynamicType
+		// from being used as an element type.
+		//
+		// In the future, if we ever need to support a set of dynamic element types, this tftypes.Set creation logic will need to be modified to ensure
+		// that known values contain the exact same concrete element type, specifically with unknown and null values. Dynamic values will return the correct concrete
+		// element type for known values from `elem.ToTerraformValue`, but unknown and null values will be tftypes.DynamicPseudoType, causing an error due to multiple element
+		// types in a tftypes.Set.
+		//
+		// Unknown and null element types of tftypes.DynamicPseudoType must be recreated as the concrete element type unknown/null value. This can be done by checking `s.elements`
+		// for a single concrete type (i.e. not tftypes.DynamicPseudoType), and using that concrete type to create unknown and null dynamic values later.
+		//
 		vals := make([]tftypes.Value, 0, len(s.elements))
 
 		for _, elem := range s.elements {
@@ -242,6 +272,11 @@ func (s SetValue) Equal(o attr.Value) bool {
 	other, ok := o.(SetValue)
 
 	if !ok {
+		return false
+	}
+
+	// A set with no elementType is an invalid state
+	if s.elementType == nil || other.elementType == nil {
 		return false
 	}
 

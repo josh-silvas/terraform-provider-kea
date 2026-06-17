@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package attr
@@ -17,6 +17,12 @@ const (
 	// NullValueString should be returned by Value.String() implementations
 	// when Value.IsNull() returns true.
 	NullValueString = "<null>"
+
+	// UnsetValueString should be returned by Value.String() implementations
+	// when Value does not contain sufficient information to display to users.
+	//
+	// This is primarily used for invalid Dynamic Value implementations.
+	UnsetValueString = "<unset>"
 )
 
 // Value defines an interface for describing data associated with an attribute.

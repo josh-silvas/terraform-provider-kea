@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2020, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package tf5server
@@ -17,19 +17,22 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-
-	"github.com/hashicorp/terraform-plugin-go/internal/logging"
-	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
-	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/fromproto"
-	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/tf5serverlogging"
-	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/tfplugin5"
-	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/toproto"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-log/tfsdklog"
 	"github.com/mitchellh/go-testing-interface"
+
+	"github.com/hashicorp/terraform-plugin-go/internal/logging"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/diag"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/fromproto"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/tf5serverlogging"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/tfplugin5"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5/internal/toproto"
 )
 
 const (
@@ -49,7 +52,7 @@ const (
 	//
 	// In the future, it may be possible to include this information directly
 	// in the protocol buffers rather than recreating a constant here.
-	protocolVersionMinor uint = 4
+	protocolVersionMinor uint = 11
 )
 
 // protocolVersion represents the combined major and minor version numbers of
@@ -104,6 +107,7 @@ type ServeConfig struct {
 	managedDebug                      bool
 	managedDebugReattachConfigTimeout time.Duration
 	managedDebugStopSignals           []os.Signal
+	managedDebugEnvFilePath           string
 
 	disableLogInitStderr bool
 	disableLogLocation   bool
@@ -174,6 +178,15 @@ func WithManagedDebugStopSignals(signals []os.Signal) ServeOpt {
 func WithManagedDebugReattachConfigTimeout(timeout time.Duration) ServeOpt {
 	return serveConfigFunc(func(in *ServeConfig) error {
 		in.managedDebugReattachConfigTimeout = timeout
+		return nil
+	})
+}
+
+// WithManagedDebugEnvFilePath returns a ServeOpt that will set the output path
+// for the managed debug process to write the reattach configuration into.
+func WithManagedDebugEnvFilePath(path string) ServeOpt {
+	return serveConfigFunc(func(in *ServeConfig) error {
+		in.managedDebugEnvFilePath = path
 		return nil
 	})
 }
@@ -380,6 +393,15 @@ func Serve(name string, serverFactory func() tfprotov5.ProviderServer, opts ...S
 
 	fmt.Println("")
 
+	if conf.managedDebugEnvFilePath != "" {
+		fmt.Printf("Writing reattach configuration to env file at path %s\n", conf.managedDebugEnvFilePath)
+
+		err = os.WriteFile(conf.managedDebugEnvFilePath, []byte(fmt.Sprintf("%s='%s'\n", envTfReattachProviders, strings.ReplaceAll(reattachStr, `'`, `'"'"'`))), 0644)
+		if err != nil {
+			return fmt.Errorf("Error writing to env file at path %s: %w", conf.managedDebugEnvFilePath, err)
+		}
+	}
+
 	// Wait for the server to be done.
 	<-conf.debugCloseCh
 
@@ -434,7 +456,7 @@ func (s *server) stoppableContext(ctx context.Context) context.Context {
 // terraform-plugin-log loggers injected.
 func (s *server) loggingContext(ctx context.Context) context.Context {
 	if s.useTFLogSink {
-		ctx = tfsdklog.RegisterTestSink(ctx, s.testHandle)
+		ctx = tfsdklog.ContextWithTestLogging(ctx, s.testHandle.Name())
 	}
 
 	ctx = logging.InitContext(ctx, s.tflogSDKOpts, s.tflogOpts)
@@ -541,6 +563,32 @@ func (s *server) GetSchema(ctx context.Context, protoReq *tfplugin5.GetProviderS
 	return protoResp, nil
 }
 
+func (s *server) GetResourceIdentitySchemas(ctx context.Context, protoReq *tfplugin5.GetResourceIdentitySchemas_Request) (*tfplugin5.GetResourceIdentitySchemas_Response, error) {
+	rpc := "GetResourceIdentitySchemas"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.GetResourceIdentitySchemasRequest(protoReq)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.GetResourceIdentitySchemas(ctx, req)
+
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.GetResourceIdentitySchemas_Response(resp)
+
+	return protoResp, nil
+}
+
 func (s *server) PrepareProviderConfig(ctx context.Context, protoReq *tfplugin5.PrepareProviderConfig_Request) (*tfplugin5.PrepareProviderConfig_Response, error) {
 	rpc := "PrepareProviderConfig"
 	ctx = s.loggingContext(ctx)
@@ -579,6 +627,7 @@ func (s *server) Configure(ctx context.Context, protoReq *tfplugin5.Configure_Re
 	defer logging.ProtocolTrace(ctx, "Served request")
 	req := fromproto.ConfigureProviderRequest(protoReq)
 
+	tf5serverlogging.ConfigureProviderClientCapabilities(ctx, req.ClientCapabilities)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
 
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
@@ -679,6 +728,7 @@ func (s *server) ReadDataSource(ctx context.Context, protoReq *tfplugin5.ReadDat
 
 	req := fromproto.ReadDataSourceRequest(protoReq)
 
+	tf5serverlogging.ReadDataSourceClientCapabilities(ctx, req.ClientCapabilities)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "ProviderMeta", req.ProviderMeta)
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
@@ -692,6 +742,11 @@ func (s *server) ReadDataSource(ctx context.Context, protoReq *tfplugin5.ReadDat
 
 	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "State", resp.State)
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
+	}
 
 	protoResp := toproto.ReadDataSource_Response(resp)
 
@@ -709,6 +764,7 @@ func (s *server) ValidateResourceTypeConfig(ctx context.Context, protoReq *tfplu
 
 	req := fromproto.ValidateResourceTypeConfigRequest(protoReq)
 
+	tf5serverlogging.ValidateResourceTypeConfigClientCapabilities(ctx, req.ClientCapabilities)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
 
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
@@ -755,6 +811,36 @@ func (s *server) UpgradeResourceState(ctx context.Context, protoReq *tfplugin5.U
 	return protoResp, nil
 }
 
+func (s *server) UpgradeResourceIdentity(ctx context.Context, protoReq *tfplugin5.UpgradeResourceIdentity_Request) (*tfplugin5.UpgradeResourceIdentity_Response, error) {
+	rpc := "UpgradeResourceIdentity"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.UpgradeResourceIdentityRequest(protoReq)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.UpgradeResourceIdentity(ctx, req)
+
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+	if resp.UpgradedIdentity != nil {
+		logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "UpgradedResourceIdentity", resp.UpgradedIdentity.IdentityData)
+	}
+
+	protoResp := toproto.UpgradeResourceIdentity_Response(resp)
+
+	return protoResp, nil
+}
+
 func (s *server) ReadResource(ctx context.Context, protoReq *tfplugin5.ReadResource_Request) (*tfplugin5.ReadResource_Response, error) {
 	rpc := "ReadResource"
 	ctx = s.loggingContext(ctx)
@@ -766,6 +852,7 @@ func (s *server) ReadResource(ctx context.Context, protoReq *tfplugin5.ReadResou
 
 	req := fromproto.ReadResourceRequest(protoReq)
 
+	tf5serverlogging.ReadResourceClientCapabilities(ctx, req.ClientCapabilities)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "CurrentState", req.CurrentState)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "ProviderMeta", req.ProviderMeta)
 	logging.ProtocolPrivateData(ctx, s.protocolDataDir, rpc, "Request", "Private", req.Private)
@@ -783,6 +870,11 @@ func (s *server) ReadResource(ctx context.Context, protoReq *tfplugin5.ReadResou
 
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "NewState", resp.NewState)
 	logging.ProtocolPrivateData(ctx, s.protocolDataDir, rpc, "Response", "Private", resp.Private)
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
+	}
 
 	protoResp := toproto.ReadResource_Response(resp)
 
@@ -800,6 +892,7 @@ func (s *server) PlanResourceChange(ctx context.Context, protoReq *tfplugin5.Pla
 
 	req := fromproto.PlanResourceChangeRequest(protoReq)
 
+	tf5serverlogging.PlanResourceChangeClientCapabilities(ctx, req.ClientCapabilities)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "PriorState", req.PriorState)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "ProposedNewState", req.ProposedNewState)
@@ -818,6 +911,11 @@ func (s *server) PlanResourceChange(ctx context.Context, protoReq *tfplugin5.Pla
 	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
 	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "PlannedState", resp.PlannedState)
 	logging.ProtocolPrivateData(ctx, s.protocolDataDir, rpc, "Response", "PlannedPrivate", resp.PlannedPrivate)
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
+	}
 
 	protoResp := toproto.PlanResourceChange_Response(resp)
 
@@ -870,6 +968,8 @@ func (s *server) ImportResourceState(ctx context.Context, protoReq *tfplugin5.Im
 
 	req := fromproto.ImportResourceStateRequest(protoReq)
 
+	tf5serverlogging.ImportResourceStateClientCapabilities(ctx, req.ClientCapabilities)
+
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
 
 	resp, err := s.downstream.ImportResourceState(ctx, req)
@@ -884,6 +984,11 @@ func (s *server) ImportResourceState(ctx context.Context, protoReq *tfplugin5.Im
 	for _, importedResource := range resp.ImportedResources {
 		logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response_ImportedResource", "State", importedResource.State)
 		logging.ProtocolPrivateData(ctx, s.protocolDataDir, rpc, "Response_ImportedResource", "Private", importedResource.Private)
+	}
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
 	}
 
 	protoResp := toproto.ImportResourceState_Response(resp)
@@ -900,37 +1005,11 @@ func (s *server) MoveResourceState(ctx context.Context, protoReq *tfplugin5.Move
 	logging.ProtocolTrace(ctx, "Received request")
 	defer logging.ProtocolTrace(ctx, "Served request")
 
-	// Remove this check and error in preference of
-	// s.downstream.MoveResourceState below once ResourceServer interface
-	// implements the MoveResourceState method.
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/363
-	// nolint:staticcheck
-	resourceServerWMRS, ok := s.downstream.(tfprotov5.ResourceServerWithMoveResourceState)
-
-	if !ok {
-		logging.ProtocolError(ctx, "ProviderServer does not implement ResourceServerWithMoveResourceState")
-
-		protoResp := &tfplugin5.MoveResourceState_Response{
-			Diagnostics: []*tfplugin5.Diagnostic{
-				{
-					Severity: tfplugin5.Diagnostic_ERROR,
-					Summary:  "Provider Move Resource State Not Implemented",
-					Detail: "A MoveResourceState call was received by the provider, however the provider does not implement the call. " +
-						"Either upgrade the provider to a version that implements move resource state support or this is a bug in Terraform that should be reported to the Terraform maintainers.",
-				},
-			},
-		}
-
-		return protoResp, nil
-	}
-
 	req := fromproto.MoveResourceStateRequest(protoReq)
 
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
 
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/363
-	// resp, err := s.downstream.MoveResourceState(ctx, req)
-	resp, err := resourceServerWMRS.MoveResourceState(ctx, req)
+	resp, err := s.downstream.MoveResourceState(ctx, req)
 
 	if err != nil {
 		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
@@ -954,26 +1033,6 @@ func (s *server) CallFunction(ctx context.Context, protoReq *tfplugin5.CallFunct
 	logging.ProtocolTrace(ctx, "Received request")
 	defer logging.ProtocolTrace(ctx, "Served request")
 
-	// Remove this check and error in preference of s.downstream.CallFunction
-	// below once ProviderServer interface requires FunctionServer.
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/353
-	functionServer, ok := s.downstream.(tfprotov5.FunctionServer)
-
-	if !ok {
-		logging.ProtocolError(ctx, "ProviderServer does not implement FunctionServer")
-
-		text := "Provider Functions Not Implemented: A provider-defined function call was received by the provider, however the provider does not implement functions. " +
-			"Either upgrade the provider to a version that implements provider-defined functions or this is a bug in Terraform that should be reported to the Terraform maintainers."
-
-		protoResp := &tfplugin5.CallFunction_Response{
-			Error: &tfplugin5.FunctionError{
-				Text: text,
-			},
-		}
-
-		return protoResp, nil
-	}
-
 	req := fromproto.CallFunctionRequest(protoReq)
 
 	for position, argument := range req.Arguments {
@@ -982,9 +1041,7 @@ func (s *server) CallFunction(ctx context.Context, protoReq *tfplugin5.CallFunct
 
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
 
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/353
-	// resp, err := s.downstream.CallFunction(ctx, req)
-	resp, err := functionServer.CallFunction(ctx, req)
+	resp, err := s.downstream.CallFunction(ctx, req)
 
 	if err != nil {
 		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
@@ -1007,28 +1064,11 @@ func (s *server) GetFunctions(ctx context.Context, protoReq *tfplugin5.GetFuncti
 	logging.ProtocolTrace(ctx, "Received request")
 	defer logging.ProtocolTrace(ctx, "Served request")
 
-	// Remove this check and response in preference of s.downstream.GetFunctions
-	// below once ProviderServer interface requires FunctionServer.
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/353
-	functionServer, ok := s.downstream.(tfprotov5.FunctionServer)
-
-	if !ok {
-		logging.ProtocolWarn(ctx, "ProviderServer does not implement FunctionServer")
-
-		protoResp := &tfplugin5.GetFunctions_Response{
-			Functions: map[string]*tfplugin5.Function{},
-		}
-
-		return protoResp, nil
-	}
-
 	req := fromproto.GetFunctionsRequest(protoReq)
 
 	ctx = tf5serverlogging.DownstreamRequest(ctx)
 
-	// Reference: https://github.com/hashicorp/terraform-plugin-go/issues/353
-	// resp, err := s.downstream.GetFunctions(ctx, req)
-	resp, err := functionServer.GetFunctions(ctx, req)
+	resp, err := s.downstream.GetFunctions(ctx, req)
 
 	if err != nil {
 		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
@@ -1040,4 +1080,446 @@ func (s *server) GetFunctions(ctx context.Context, protoReq *tfplugin5.GetFuncti
 	protoResp := toproto.GetFunctions_Response(resp)
 
 	return protoResp, nil
+}
+
+func (s *server) ValidateEphemeralResourceConfig(ctx context.Context, protoReq *tfplugin5.ValidateEphemeralResourceConfig_Request) (*tfplugin5.ValidateEphemeralResourceConfig_Response, error) {
+	rpc := "ValidateEphemeralResourceConfig"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.EphemeralResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.ValidateEphemeralResourceConfigRequest(protoReq)
+
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.ValidateEphemeralResourceConfig(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.ValidateEphemeralResourceConfig_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) OpenEphemeralResource(ctx context.Context, protoReq *tfplugin5.OpenEphemeralResource_Request) (*tfplugin5.OpenEphemeralResource_Response, error) {
+	rpc := "OpenEphemeralResource"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.EphemeralResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.OpenEphemeralResourceRequest(protoReq)
+
+	tf5serverlogging.OpenEphemeralResourceClientCapabilities(ctx, req.ClientCapabilities)
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.OpenEphemeralResource(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "Result", resp.Result)
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
+	}
+
+	protoResp := toproto.OpenEphemeralResource_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) RenewEphemeralResource(ctx context.Context, protoReq *tfplugin5.RenewEphemeralResource_Request) (*tfplugin5.RenewEphemeralResource_Response, error) {
+	rpc := "RenewEphemeralResource"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.EphemeralResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.RenewEphemeralResourceRequest(protoReq)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.RenewEphemeralResource(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.RenewEphemeralResource_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) CloseEphemeralResource(ctx context.Context, protoReq *tfplugin5.CloseEphemeralResource_Request) (*tfplugin5.CloseEphemeralResource_Response, error) {
+	rpc := "CloseEphemeralResource"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.EphemeralResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.CloseEphemeralResourceRequest(protoReq)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.CloseEphemeralResource(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.CloseEphemeralResource_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) ValidateListResourceConfig(ctx context.Context, protoReq *tfplugin5.ValidateListResourceConfig_Request) (*tfplugin5.ValidateListResourceConfig_Response, error) {
+	rpc := "ValidateListResourceConfig"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ListResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.ValidateListResourceConfigRequest(protoReq)
+
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	// TODO: Remove this check and error once ProviderServer interface
+	// implements this RPC method.
+	// nolint:staticcheck
+	listResourceServer, ok := s.downstream.(tfprotov5.ProviderServerWithListResource)
+	if !ok {
+		logging.ProtocolError(ctx, "ProviderServer does not implement ValidateListResourceConfig")
+
+		protoResp := &tfplugin5.ValidateListResourceConfig_Response{
+			Diagnostics: []*tfplugin5.Diagnostic{
+				{
+					Severity: tfplugin5.Diagnostic_ERROR,
+					Summary:  "Provider ValidateListResourceConfig Not Implemented",
+					Detail: "A ValidateListResourceConfig call was received by the provider, however the provider does not implement the call. " +
+						"Either upgrade the provider to a version that implements list support or this is a bug in Terraform that should be reported to the Terraform maintainers.",
+				},
+			},
+		}
+
+		return protoResp, nil
+	}
+
+	// TODO: Update this to call downstream once optional interface is removed
+	// resp, err := s.downstream.ValidateListResourceConfig(ctx, req)
+	resp, err := listResourceServer.ValidateListResourceConfig(ctx, req)
+
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.ValidateListResourceConfig_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) ListResource(protoReq *tfplugin5.ListResource_Request, protoStream grpc.ServerStreamingServer[tfplugin5.ListResource_Event]) error {
+	rpc := "ListResource"
+	ctx := protoStream.Context()
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ListResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.ListResourceRequest(protoReq)
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	// TODO: Remove this check and error in preference of
+	// s.downstream.ValidateListResourceConfig below once ProviderServer interface
+	// implements this RPC method.
+	// nolint:staticcheck
+	downstream, ok := s.downstream.(tfprotov5.ProviderServerWithListResource)
+	if !ok {
+		err := status.Error(codes.Unimplemented, "ProviderServer does not implement ListResource")
+		logging.ProtocolError(ctx, err.Error())
+		return err
+	}
+
+	resp, err := downstream.ListResource(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return err
+	}
+
+	for ev := range resp.Results {
+		select {
+		case <-ctx.Done():
+			logging.ProtocolTrace(ctx, "Context done")
+			return nil
+
+		default:
+			tf5serverlogging.DownstreamServerEvent(ctx, ev.Diagnostics)
+
+			protoEv := toproto.ListResource_ListResourceEvent(&ev)
+			if err := protoStream.Send(protoEv); err != nil {
+				logging.ProtocolError(ctx, "Error sending event", map[string]any{logging.KeyError: err})
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *server) ValidateActionConfig(ctx context.Context, protoReq *tfplugin5.ValidateActionConfig_Request) (*tfplugin5.ValidateActionConfig_Response, error) {
+	rpc := "ValidateActionConfig"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ActionContext(ctx, protoReq.ActionType)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.ValidateActionConfigRequest(protoReq)
+
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	// TODO: Remove this check and error in preference of
+	// s.downstream.ValidateActionConfig below once ProviderServer interface
+	// implements this RPC method.
+	// nolint:staticcheck
+	actionsProviderServer, ok := s.downstream.(tfprotov5.ProviderServerWithActions)
+	if !ok {
+		logging.ProtocolError(ctx, "ProviderServer does not implement ValidateActionConfig")
+
+		protoResp := &tfplugin5.ValidateActionConfig_Response{
+			Diagnostics: []*tfplugin5.Diagnostic{
+				{
+					Severity: tfplugin5.Diagnostic_ERROR,
+					Summary:  "Provider ValidateActionConfig Not Implemented",
+					Detail: "A ValidateActionConfig call was received by the provider, however the provider does not implement the call. " +
+						"Either upgrade the provider to a version that implements action support or this is a bug in Terraform that should be reported to the Terraform maintainers.",
+				},
+			},
+		}
+
+		return protoResp, nil
+	}
+
+	resp, err := actionsProviderServer.ValidateActionConfig(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	protoResp := toproto.ValidateActionConfig_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) PlanAction(ctx context.Context, protoReq *tfplugin5.PlanAction_Request) (*tfplugin5.PlanAction_Response, error) {
+	rpc := "PlanAction"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ActionContext(ctx, protoReq.ActionType)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.PlanActionRequest(protoReq)
+
+	tf5serverlogging.PlanActionClientCapabilities(ctx, req.ClientCapabilities)
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	// TODO: Remove this check and error in preference of
+	// s.downstream.PlanAction below once ProviderServer interface
+	// implements this RPC method.
+	// nolint:staticcheck
+	actionsProviderServer, ok := s.downstream.(tfprotov5.ProviderServerWithActions)
+	if !ok {
+		logging.ProtocolError(ctx, "ProviderServer does not implement PlanAction")
+
+		protoResp := &tfplugin5.PlanAction_Response{
+			Diagnostics: []*tfplugin5.Diagnostic{
+				{
+					Severity: tfplugin5.Diagnostic_ERROR,
+					Summary:  "Provider PlanAction Not Implemented",
+					Detail: "A PlanAction call was received by the provider, however the provider does not implement the call. " +
+						"Either upgrade the provider to a version that implements action support or this is a bug in Terraform that should be reported to the Terraform maintainers.",
+				},
+			},
+		}
+
+		return protoResp, nil
+	}
+
+	// TODO: Update this to call downstream once optional interface is removed
+	// resp, err := s.downstream.PlanAction(ctx, req)
+	resp, err := actionsProviderServer.PlanAction(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	tf5serverlogging.Deferred(ctx, resp.Deferred)
+
+	if resp.Deferred != nil && (req.ClientCapabilities == nil || !req.ClientCapabilities.DeferralAllowed) {
+		resp.Diagnostics = append(resp.Diagnostics, invalidDeferredResponseDiag(resp.Deferred.Reason))
+	}
+
+	protoResp := toproto.PlanAction_Response(resp)
+
+	return protoResp, nil
+}
+
+func (s *server) InvokeAction(protoReq *tfplugin5.InvokeAction_Request, protoStream grpc.ServerStreamingServer[tfplugin5.InvokeAction_Event]) error {
+	rpc := "InvokeAction"
+	ctx := protoStream.Context()
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ActionContext(ctx, protoReq.ActionType)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.InvokeActionRequest(protoReq)
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "Config", req.Config)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	// TODO: Remove this check and error in preference of
+	// s.downstream.InvokeAction below once ProviderServer interface
+	// implements this RPC method.
+	// nolint:staticcheck
+	actionsProviderServer, ok := s.downstream.(tfprotov5.ProviderServerWithActions)
+	if !ok {
+		logging.ProtocolError(ctx, "ProviderServer does not implement InvokeAction")
+
+		protoEvent := &tfplugin5.InvokeAction_Event{
+			Type: &tfplugin5.InvokeAction_Event_Completed_{
+				Completed: &tfplugin5.InvokeAction_Event_Completed{
+					Diagnostics: []*tfplugin5.Diagnostic{
+						{
+							Severity: tfplugin5.Diagnostic_ERROR,
+							Summary:  "Provider InvokeAction Not Implemented",
+							Detail: "An InvokeAction call was received by the provider, however the provider does not implement the call. " +
+								"Either upgrade the provider to a version that implements action support or this is a bug in Terraform that should be reported to the Terraform maintainers.",
+						},
+					},
+				},
+			},
+		}
+
+		return protoStream.Send(protoEvent)
+	}
+
+	// TODO: Update this to call downstream once optional interface is removed
+	// resp, err := s.downstream.InvokeAction(ctx, req)
+	resp, err := actionsProviderServer.InvokeAction(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]interface{}{logging.KeyError: err})
+		return err
+	}
+
+	for ev := range resp.Events {
+		select {
+		case <-ctx.Done():
+			logging.ProtocolTrace(ctx, "Context done")
+			return nil
+
+		default:
+			switch ev := ev.Type.(type) {
+			// MAINTAINER NOTE: Only the completed event has diagnostics to log, otherwise we just send an empty slice.
+			case *tfprotov5.CompletedInvokeActionEventType:
+				tf5serverlogging.DownstreamServerEvent(ctx, ev.Diagnostics)
+			default:
+				tf5serverlogging.DownstreamServerEvent(ctx, make(diag.Diagnostics, 0))
+			}
+
+			protoEv := toproto.InvokeAction_InvokeActionEvent(&ev)
+			if err := protoStream.Send(protoEv); err != nil {
+				logging.ProtocolError(ctx, "Error sending event", map[string]any{logging.KeyError: err})
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *server) GenerateResourceConfig(ctx context.Context, protoReq *tfplugin5.GenerateResourceConfig_Request) (protoResp *tfplugin5.GenerateResourceConfig_Response, err error) {
+	rpc := "GenerateResourceConfig"
+	ctx = s.loggingContext(ctx)
+	ctx = logging.RpcContext(ctx, rpc)
+	ctx = logging.ResourceContext(ctx, protoReq.TypeName)
+	ctx = s.stoppableContext(ctx)
+	logging.ProtocolTrace(ctx, "Received request")
+	defer logging.ProtocolTrace(ctx, "Served request")
+
+	req := fromproto.GenerateResourceConfigRequest(protoReq)
+
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Request", "State", req.State)
+
+	ctx = tf5serverlogging.DownstreamRequest(ctx)
+
+	resp, err := s.downstream.GenerateResourceConfig(ctx, req)
+	if err != nil {
+		logging.ProtocolError(ctx, "Error from downstream", map[string]any{logging.KeyError: err})
+		return nil, err
+	}
+
+	tf5serverlogging.DownstreamResponse(ctx, resp.Diagnostics)
+
+	logging.ProtocolData(ctx, s.protocolDataDir, rpc, "Response", "Config", resp.Config)
+
+	protoResp = toproto.GenerateResourceConfig_Response(resp)
+
+	return protoResp, nil
+}
+
+func invalidDeferredResponseDiag(reason tfprotov5.DeferredReason) *tfprotov5.Diagnostic {
+	return &tfprotov5.Diagnostic{
+		Severity: tfprotov5.DiagnosticSeverityError,
+		Summary:  "Invalid Deferred Response",
+		Detail: "Provider returned a deferred response but the Terraform request did not indicate support for deferred actions." +
+			"This is an issue with the provider and should be reported to the provider developers.\n\n" +
+			fmt.Sprintf("Deferred reason - %q", reason.String()),
+	}
 }

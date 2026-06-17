@@ -1,4 +1,4 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright IBM Corp. 2021, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package xattr
@@ -6,14 +6,19 @@ package xattr
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
+
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
-	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 // TypeWithValidate extends the attr.Type interface to include a Validate
 // method, used to bundle consistent validation logic with the Type.
+//
+// Deprecated: Use the ValidateableAttribute interface instead for schema
+// attribute validation. Use the function.ValidateableParameter interface
+// for provider-defined function parameter validation.
 type TypeWithValidate interface {
 	attr.Type
 
